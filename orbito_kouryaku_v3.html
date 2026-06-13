@@ -1,0 +1,528 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>軌道四目 攻略盤 v3</title>
+<style>
+  body {
+    font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    background: #f4f4f4;
+    margin: 0;
+    padding: 20px;
+    color: #222;
+  }
+  .app {
+    max-width: 760px;
+    margin: 0 auto;
+    background: white;
+    padding: 18px;
+    border-radius: 16px;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.12);
+  }
+  h1 { margin: 0 0 8px; font-size: 24px; }
+  .note { color: #666; font-size: 14px; line-height: 1.5; }
+  .status {
+    margin: 14px 0;
+    padding: 10px 12px;
+    background: #f0f0f0;
+    border-radius: 10px;
+    font-weight: 700;
+  }
+  .board {
+    display: grid;
+    grid-template-columns: repeat(4, 82px);
+    grid-template-rows: repeat(4, 82px);
+    gap: 8px;
+    justify-content: center;
+    margin: 18px auto;
+    user-select: none;
+  }
+  .cell {
+    width: 82px;
+    height: 82px;
+    border-radius: 14px;
+    border: 2px solid #b84a3c;
+    background: #c94737;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    position: relative;
+  }
+  .cell.selected { outline: 5px solid #ffcc00; }
+  .cell.legal { box-shadow: inset 0 0 0 5px rgba(255,255,255,0.55); }
+  .stone {
+    width: 52px;
+    height: 52px;
+    border-radius: 50%;
+    box-shadow: inset -5px -7px 10px rgba(0,0,0,.20), 0 4px 8px rgba(0,0,0,.35);
+  }
+  .white { background: #fafafa; }
+  .black { background: #111; }
+  .buttons, .mode, .reviewbar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    justify-content: center;
+    margin-top: 10px;
+  }
+  button {
+    border: 0;
+    border-radius: 10px;
+    padding: 10px 14px;
+    font-weight: 700;
+    cursor: pointer;
+    background: #222;
+    color: white;
+  }
+  button.secondary { background: #777; }
+  button.danger { background: #b00020; }
+  button.good { background: #008060; }
+  button.active { background: #0077cc; }
+  button:disabled { opacity: .4; cursor: not-allowed; }
+  .small {
+    font-size: 13px;
+    color: #666;
+    margin-top: 12px;
+    line-height: 1.6;
+  }
+  .log {
+    margin-top: 14px;
+    background: #fafafa;
+    border: 1px solid #ddd;
+    border-radius: 10px;
+    padding: 10px;
+    max-height: 160px;
+    overflow: auto;
+    font-size: 13px;
+    line-height: 1.5;
+  }
+  .log div.current {
+    font-weight: 700;
+    background: #fff3c4;
+  }
+  @media (max-width: 420px) {
+    .board {
+      grid-template-columns: repeat(4, 66px);
+      grid-template-rows: repeat(4, 66px);
+      gap: 6px;
+    }
+    .cell { width: 66px; height: 66px; }
+    .stone { width: 42px; height: 42px; }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <h1>軌道四目 攻略盤 v3</h1>
+  <div class="note">
+    ローカル2人対戦用。効率練習用。v3ではランダム初期配置の座標を棋譜に明記します。
+  </div>
+
+  <div class="status" id="status"></div>
+
+  <div class="mode">
+    <button id="moveModeBtn" class="active" onclick="setMode('move')">1. 相手玉を動かす</button>
+    <button id="placeModeBtn" onclick="setMode('place')">2. 自分玉を置く</button>
+    <button id="reviewModeBtn" onclick="startReview()">棋譜振り返り</button>
+  </div>
+
+  <div class="board" id="board"></div>
+
+  <div class="buttons">
+    <button onclick="skipMove()">相手玉移動をスキップ</button>
+    <button onclick="rotateAndEndTurn()">軌道回転して手番終了</button>
+    <button class="secondary" onclick="undo()">待った</button>
+    <button class="good" onclick="randomSetup()">黒3・白3ランダム開始</button>
+    <button class="danger" onclick="resetGame()">リセット</button>
+  </div>
+
+  <div class="reviewbar" id="reviewbar" style="display:none;">
+    <button onclick="reviewPrev()">← 前</button>
+    <button onclick="reviewNext()">次 →</button>
+    <button class="secondary" onclick="endReview()">対局に戻る</button>
+  </div>
+
+  <div class="log" id="log"></div>
+
+  <div class="small">
+    操作：相手玉を1マス動かすかスキップ → 自分玉を置く → 軌道回転。勝敗判定は回転後のみ。<br>
+    「黒3・白3ランダム開始」は、盤面をランダム初期化して黒番から始めます。<br>
+    「棋譜振り返り」は、各ターン終了後の盤面を前後に見返します。
+  </div>
+</div>
+
+<script>
+const EMPTY = 0, WHITE = 1, BLACK = 2;
+let board = Array.from({ length: 4 }, () => Array(4).fill(EMPTY));
+let turn = BLACK;
+let mode = "move";
+let selected = null;
+let movedOpponent = false;
+let placedOwn = false;
+let history = [];
+let gameOver = false;
+
+let snapshots = [];
+let moveLog = [];
+let reviewMode = false;
+let reviewIndex = 0;
+let liveStateBeforeReview = null;
+
+const outerTrack = [
+  [0,0],[0,1],[0,2],[0,3],
+  [1,3],[2,3],[3,3],
+  [3,2],[3,1],[3,0],
+  [2,0],[1,0]
+];
+
+const innerTrack = [
+  [1,1],[1,2],[2,2],[2,1]
+];
+
+function emptyBoard() {
+  return Array.from({ length: 4 }, () => Array(4).fill(EMPTY));
+}
+
+function copyBoard(b) {
+  return b.map(row => row.slice());
+}
+
+function cloneState() {
+  return JSON.stringify({
+    board, turn, mode, selected, movedOpponent, placedOwn, gameOver,
+    snapshots, moveLog
+  });
+}
+
+function restoreState(s) {
+  const data = JSON.parse(s);
+  board = data.board;
+  turn = data.turn;
+  mode = data.mode;
+  selected = data.selected;
+  movedOpponent = data.movedOpponent;
+  placedOwn = data.placedOwn;
+  gameOver = data.gameOver;
+  snapshots = data.snapshots || [];
+  moveLog = data.moveLog || [];
+  reviewMode = false;
+  render();
+}
+
+function pushHistory() {
+  history.push(cloneState());
+}
+
+function saveSnapshot(label) {
+  snapshots.push(copyBoard(board));
+  moveLog.push(label);
+}
+
+function opponent() {
+  return turn === BLACK ? WHITE : BLACK;
+}
+
+function colorName(c) {
+  return c === BLACK ? "黒" : "白";
+}
+
+function coord(r, c) {
+  return String.fromCharCode(65 + c) + (r + 1);
+}
+
+
+function coordsOf(color) {
+  const result = [];
+  for (let r=0; r<4; r++) {
+    for (let c=0; c<4; c++) {
+      if (board[r][c] === color) result.push(coord(r,c));
+    }
+  }
+  return result;
+}
+
+function boardDiagram() {
+  return board.map(row => row.map(v => v === BLACK ? "黒" : v === WHITE ? "白" : "・").join("")).join(" / ");
+}
+
+function setMode(newMode) {
+  if (gameOver || reviewMode) return;
+  mode = newMode;
+  selected = null;
+  render();
+}
+
+function skipMove() {
+  if (gameOver || reviewMode || mode !== "move") return;
+  pushHistory();
+  movedOpponent = true;
+  mode = "place";
+  selected = null;
+  render();
+}
+
+function onCellClick(r, c) {
+  if (gameOver || reviewMode) return;
+  if (mode === "move") handleMoveMode(r, c);
+  else handlePlaceMode(r, c);
+}
+
+function handleMoveMode(r, c) {
+  const opp = opponent();
+
+  if (!selected) {
+    if (board[r][c] === opp) {
+      selected = [r, c];
+      render();
+    }
+    return;
+  }
+
+  const [sr, sc] = selected;
+
+  if (sr === r && sc === c) {
+    selected = null;
+    render();
+    return;
+  }
+
+  const adjacent = Math.abs(sr-r) + Math.abs(sc-c) === 1;
+
+  if (adjacent && board[r][c] === EMPTY) {
+    pushHistory();
+    board[r][c] = board[sr][sc];
+    board[sr][sc] = EMPTY;
+    selected = null;
+    movedOpponent = true;
+    mode = "place";
+    moveLog.push(`${colorName(turn)}番：相手${colorName(opp)}を ${coord(sr,sc)}→${coord(r,c)} に移動`);
+    render();
+  } else if (board[r][c] === opp) {
+    selected = [r, c];
+    render();
+  }
+}
+
+function handlePlaceMode(r, c) {
+  if (placedOwn || board[r][c] !== EMPTY) return;
+  pushHistory();
+  board[r][c] = turn;
+  placedOwn = true;
+  moveLog.push(`${colorName(turn)}番：${coord(r,c)} に配置`);
+  render();
+}
+
+function rotateTrack(track) {
+  const vals = track.map(([r,c]) => board[r][c]);
+  vals.push(vals.shift());
+  track.forEach(([r,c], i) => board[r][c] = vals[i]);
+}
+
+function rotateAndEndTurn() {
+  if (gameOver || reviewMode) return;
+  if (!placedOwn) {
+    alert("先に自分の玉を置いてください。");
+    return;
+  }
+
+  pushHistory();
+  rotateTrack(outerTrack);
+  rotateTrack(innerTrack);
+
+  saveSnapshot(`${colorName(turn)}番終了後：軌道回転後`);
+
+  const winner = checkWinner();
+  if (winner === "draw") {
+    gameOver = true;
+    render("同時に4つ並びました。引き分けです。棋譜振り返りが使えます。");
+    return;
+  } else if (winner) {
+    gameOver = true;
+    render(colorName(winner) + "の勝ちです。棋譜振り返りが使えます。");
+    return;
+  }
+
+  turn = opponent();
+  mode = "move";
+  selected = null;
+  movedOpponent = false;
+  placedOwn = false;
+  render();
+}
+
+function checkWinner() {
+  const lines = [];
+  for (let r=0; r<4; r++) lines.push([[r,0],[r,1],[r,2],[r,3]]);
+  for (let c=0; c<4; c++) lines.push([[0,c],[1,c],[2,c],[3,c]]);
+  lines.push([[0,0],[1,1],[2,2],[3,3]]);
+  lines.push([[0,3],[1,2],[2,1],[3,0]]);
+
+  let blackWin = false, whiteWin = false;
+  for (const line of lines) {
+    const vals = line.map(([r,c]) => board[r][c]);
+    if (vals.every(v => v === BLACK)) blackWin = true;
+    if (vals.every(v => v === WHITE)) whiteWin = true;
+  }
+  if (blackWin && whiteWin) return "draw";
+  if (blackWin) return BLACK;
+  if (whiteWin) return WHITE;
+  return null;
+}
+
+function isLegalMoveTarget(r, c) {
+  if (!selected) return false;
+  const [sr, sc] = selected;
+  return board[r][c] === EMPTY && Math.abs(sr-r) + Math.abs(sc-c) === 1;
+}
+
+function undo() {
+  if (reviewMode) return;
+  if (history.length === 0) return;
+  restoreState(history.pop());
+}
+
+function resetGame() {
+  if (!confirm("リセットしますか？")) return;
+  board = emptyBoard();
+  turn = BLACK;
+  mode = "move";
+  selected = null;
+  movedOpponent = false;
+  placedOwn = false;
+  history = [];
+  gameOver = false;
+  snapshots = [];
+  moveLog = [];
+  reviewMode = false;
+  reviewIndex = 0;
+  render();
+}
+
+function shuffle(arr) {
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+  return arr;
+}
+
+function randomSetup() {
+  if (!confirm("現在の盤面を捨てて、黒3・白3のランダム配置で開始しますか？")) return;
+
+  board = emptyBoard();
+  const cells = [];
+  for (let r=0; r<4; r++) for (let c=0; c<4; c++) cells.push([r,c]);
+  shuffle(cells);
+
+  for (let i=0; i<3; i++) {
+    const [r,c] = cells[i];
+    board[r][c] = BLACK;
+  }
+  for (let i=3; i<6; i++) {
+    const [r,c] = cells[i];
+    board[r][c] = WHITE;
+  }
+
+  const blackCoords = coordsOf(BLACK).join(", ");
+  const whiteCoords = coordsOf(WHITE).join(", ");
+
+  turn = BLACK;
+  mode = "move";
+  selected = null;
+  movedOpponent = false;
+  placedOwn = false;
+  history = [];
+  gameOver = false;
+  reviewMode = false;
+  reviewIndex = 0;
+  snapshots = [copyBoard(board)];
+  moveLog = [`ランダム初期配置：黒=${blackCoords} / 白=${whiteCoords}｜盤面 ${boardDiagram()}`];
+  render();
+}
+
+function startReview() {
+  if (snapshots.length === 0) {
+    alert("まだ振り返る棋譜がありません。");
+    return;
+  }
+  liveStateBeforeReview = cloneState();
+  reviewMode = true;
+  reviewIndex = snapshots.length - 1;
+  board = copyBoard(snapshots[reviewIndex]);
+  render();
+}
+
+function endReview() {
+  if (!reviewMode) return;
+  reviewMode = false;
+  if (liveStateBeforeReview) restoreState(liveStateBeforeReview);
+  liveStateBeforeReview = null;
+  render();
+}
+
+function reviewPrev() {
+  if (!reviewMode) return;
+  if (reviewIndex > 0) reviewIndex--;
+  board = copyBoard(snapshots[reviewIndex]);
+  render();
+}
+
+function reviewNext() {
+  if (!reviewMode) return;
+  if (reviewIndex < snapshots.length - 1) reviewIndex++;
+  board = copyBoard(snapshots[reviewIndex]);
+  render();
+}
+
+function render(forcedMessage=null) {
+  const boardEl = document.getElementById("board");
+  boardEl.innerHTML = "";
+
+  for (let r=0; r<4; r++) {
+    for (let c=0; c<4; c++) {
+      const cell = document.createElement("div");
+      cell.className = "cell";
+      if (!reviewMode && selected && selected[0] === r && selected[1] === c) cell.classList.add("selected");
+      if (!reviewMode && mode === "move" && isLegalMoveTarget(r,c)) cell.classList.add("legal");
+      cell.onclick = () => onCellClick(r,c);
+
+      if (board[r][c] !== EMPTY) {
+        const stone = document.createElement("div");
+        stone.className = "stone " + (board[r][c] === WHITE ? "white" : "black");
+        cell.appendChild(stone);
+      }
+
+      boardEl.appendChild(cell);
+    }
+  }
+
+  document.getElementById("moveModeBtn").classList.toggle("active", mode === "move" && !reviewMode);
+  document.getElementById("placeModeBtn").classList.toggle("active", mode === "place" && !reviewMode);
+  document.getElementById("reviewModeBtn").classList.toggle("active", reviewMode);
+  document.getElementById("reviewbar").style.display = reviewMode ? "flex" : "none";
+
+  let msg = forcedMessage;
+  if (!msg) {
+    if (reviewMode) msg = `棋譜振り返り：${reviewIndex + 1} / ${snapshots.length}　${moveLog[reviewIndex] || ""}`;
+    else if (gameOver) msg = "ゲーム終了。棋譜振り返りが使えます。";
+    else if (mode === "move") msg = `${colorName(turn)}番：相手の${colorName(opponent())}玉を1マス動かすか、スキップしてください。`;
+    else msg = `${colorName(turn)}番：自分の${colorName(turn)}玉を空きマスに置いてください。`;
+  }
+  document.getElementById("status").textContent = msg;
+
+  const logEl = document.getElementById("log");
+  logEl.innerHTML = "";
+  moveLog.forEach((txt, i) => {
+    const div = document.createElement("div");
+    div.textContent = `${i + 1}. ${txt}`;
+    if (reviewMode && i === reviewIndex) div.className = "current";
+    logEl.appendChild(div);
+  });
+}
+
+render();
+</script>
+</body>
+</html>
